@@ -1,5 +1,8 @@
 # Rack Idempotency Kit
 
+[![Gem Version](https://img.shields.io/gem/v/rack-idempotency-kit.svg)](https://rubygems.org/gems/rack-idempotency-kit)
+[![GitHub Release](https://img.shields.io/github/v/release/Elysium-Arc/rack-idempotency-kit.svg)](https://github.com/Elysium-Arc/rack-idempotency-kit/releases)
+
 Stripe-style idempotency for Rack and Rails APIs.
 
 ## About
