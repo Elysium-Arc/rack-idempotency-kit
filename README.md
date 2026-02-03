@@ -7,6 +7,12 @@ Rack Idempotency Kit ensures that repeated requests with the same idempotency ke
 
 The middleware stores a fingerprint of the request and a completed response. If the same key is used with different request parameters, it returns a conflict.
 
+## Use Cases
+- Payment, checkout, and webhook endpoints with retries
+- API clients with timeouts and automatic replays
+- Protecting side-effecting endpoints from duplicate writes
+- Reducing p99 spikes caused by retry storms
+
 ## Compatibility
 - Ruby 3.0+
 - Rack 2.2+
