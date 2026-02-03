@@ -62,7 +62,7 @@ module Rack
 
         [status, headers, [body_str]]
       ensure
-        body&.close if body.respond_to?(:close)
+        body.close if body.respond_to?(:close)
       end
 
       private
@@ -72,10 +72,10 @@ module Rack
       end
 
       def fingerprint_for(req)
-        body = req.body.read
-        req.body.rewind
-        Digest::SHA256.hexdigest([req.request_method, req.path, req.query_string, body].join("
-"))
+        io = req.body
+        body = io ? io.read : ""
+        io.rewind if io && io.respond_to?(:rewind)
+        Digest::SHA256.hexdigest([req.request_method, req.path, req.query_string, body].join("\n"))
       end
 
       def replay_or_conflict(key, stored, fingerprint)
@@ -116,7 +116,7 @@ module Rack
         elsif store.respond_to?(:get) && store.respond_to?(:set)
           RedisAdapter.new(store)
         else
-          raise Error, "store must support read/write or get/set"
+          raise Kit::Error, "store must support read/write or get/set"
         end
       end
     end

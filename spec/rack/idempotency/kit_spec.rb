@@ -116,14 +116,14 @@ RSpec.describe Rack::Idempotency::Kit do
     store = MemoryStore.new
     app = lambda { |_env| [200, { "Content-Type" => "text/plain" }, ["ok"]] }
 
-    middleware = described_class.new(app, store: store, wait_timeout: 0.05)
+    middleware = described_class.new(app, store: store, wait_timeout: 0.2)
     req = Rack::MockRequest.new(middleware)
 
     call_count = 0
     fp = fingerprint_for(method: "POST", path: "/")
     store.define_singleton_method(:read) do |key|
       call_count += 1
-      return { state: "in_flight", fingerprint: fp } if call_count < 2
+      return { state: "in_flight", fingerprint: fp } if call_count < 3
       { state: "completed", fingerprint: fp, status: 200, headers: { "Content-Type" => "text/plain" }, body: "done" }
     end
 
@@ -153,6 +153,56 @@ RSpec.describe Rack::Idempotency::Kit do
 
     res = req.post("/", "HTTP_IDEMPOTENCY_KEY" => "abc")
     expect(res.body).to eq("cached")
+  end
+
+  it "replays when write_if_absent fails after a race" do
+    record = { state: "completed", fingerprint: fingerprint_for(method: "POST", path: "/"), status: 200, headers: {}, body: "cached" }
+    store = Class.new do
+      def initialize(record)
+        @record = record
+        @reads = 0
+      end
+
+      def read(_key)
+        @reads += 1
+        return nil if @reads == 1
+        @record
+      end
+
+      def write(_key, _value, expires_in: nil, unless_exist: false)
+        return false if unless_exist
+        true
+      end
+    end.new(record)
+
+    store.write("idempotency:noop", { state: "completed" }, unless_exist: false)
+
+    app = lambda { |_env| [200, { "Content-Type" => "text/plain" }, ["ok"]] }
+    middleware = described_class.new(app, store: store)
+    req = Rack::MockRequest.new(middleware)
+
+    res = req.post("/", "HTTP_IDEMPOTENCY_KEY" => "abc")
+    expect(res.body).to eq("cached")
+  end
+
+  it "falls through when write_if_absent fails without a stored record" do
+    store = Class.new do
+      def read(_key)
+        nil
+      end
+
+      def write(_key, _value, expires_in: nil, unless_exist: false)
+        return false if unless_exist
+        true
+      end
+    end.new
+
+    app = lambda { |_env| [200, { "Content-Type" => "text/plain" }, ["ok"]] }
+    middleware = described_class.new(app, store: store)
+    req = Rack::MockRequest.new(middleware)
+
+    res = req.post("/", "HTTP_IDEMPOTENCY_KEY" => "abc")
+    expect(res.body).to eq("ok")
   end
 
   it "normalizes bodies without #each" do
@@ -190,6 +240,16 @@ RSpec.describe Rack::Idempotency::Kit do
     expect(body.closed).to eq(true)
   end
 
+  it "handles nil response bodies" do
+    store = MemoryStore.new
+    app = lambda { |_env| [200, { "Content-Type" => "text/plain" }, nil] }
+    middleware = described_class.new(app, store: store)
+    req = Rack::MockRequest.new(middleware)
+
+    res = req.post("/", "HTTP_IDEMPOTENCY_KEY" => "abc")
+    expect(res.body).to eq("")
+  end
+
   it "supports redis-style stores" do
     store = RedisStore.new
     app = lambda { |_env| [200, { "Content-Type" => "text/plain" }, ["ok"]] }
@@ -202,6 +262,18 @@ RSpec.describe Rack::Idempotency::Kit do
 
     expect(res1.body).to eq("ok")
     expect(res2.body).to eq("ok")
+  end
+
+  it "returns false on write when unless_exist and key exists" do
+    store = MemoryStore.new
+    store.write("idempotency:abc", { state: "completed" })
+    expect(store.write("idempotency:abc", { state: "completed" }, unless_exist: true)).to eq(false)
+  end
+
+  it "returns false on set when nx and key exists" do
+    store = RedisStore.new
+    store.set("idempotency:abc", "value", nx: true)
+    expect(store.set("idempotency:abc", "value", nx: true)).to eq(false)
   end
 
   it "raises for unknown store adapters" do
