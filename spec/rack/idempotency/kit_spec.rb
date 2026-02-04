@@ -131,7 +131,7 @@ RSpec.describe Rack::Idempotency::Kit do
     expect(res.body).to eq("done")
   end
 
-  it "does not store responses larger than max_body_bytes" do
+  it "marks responses larger than max_body_bytes as non-replayable" do
     store = MemoryStore.new
     app = lambda { |_env| [200, { "Content-Type" => "text/plain" }, ["too-large"]] }
 
@@ -140,7 +140,23 @@ RSpec.describe Rack::Idempotency::Kit do
 
     req.post("/", "HTTP_IDEMPOTENCY_KEY" => "abc")
 
-    expect(store.writes).to eq(1) # only the in-flight write
+    record = store.read("idempotency:abc")
+    expect(record[:too_large]).to eq(true)
+    expect(store.writes).to eq(2)
+  end
+
+  it "returns conflict when replaying oversized responses" do
+    store = MemoryStore.new
+    app = lambda { |_env| [200, { "Content-Type" => "text/plain" }, ["too-large"]] }
+
+    middleware = described_class.new(app, store: store, max_body_bytes: 2)
+    req = Rack::MockRequest.new(middleware)
+
+    req.post("/", "HTTP_IDEMPOTENCY_KEY" => "abc")
+    res = req.post("/", "HTTP_IDEMPOTENCY_KEY" => "abc")
+
+    expect(res.status).to eq(409)
+    expect(res.body).to include("idempotency_key_body_too_large")
   end
 
   it "replays from pre-existing records when write_if_absent fails" do
@@ -279,5 +295,49 @@ RSpec.describe Rack::Idempotency::Kit do
   it "raises for unknown store adapters" do
     app = lambda { |_env| [200, { "Content-Type" => "text/plain" }, ["ok"]] }
     expect { described_class.new(app, store: UnknownStore.new) }.to raise_error(Rack::Idempotency::Kit::Error)
+  end
+
+  it "falls back when ActiveSupport store does not support unless_exist" do
+    store = Class.new do
+      def initialize
+        @data = {}
+      end
+
+      def read(key)
+        @data[key]
+      end
+
+      def write(key, value, expires_in: nil, unless_exist: false)
+        raise ArgumentError if unless_exist
+        @data[key] = value
+        true
+      end
+    end.new
+
+    app = lambda { |_env| [200, { "Content-Type" => "text/plain" }, ["ok"]] }
+    middleware = described_class.new(app, store: store)
+    req = Rack::MockRequest.new(middleware)
+
+    res = req.post("/", "HTTP_IDEMPOTENCY_KEY" => "abc")
+    expect(res.body).to eq("ok")
+  end
+
+  it "returns false when fallback write_if_absent finds existing data" do
+    store = Class.new do
+      def initialize
+        @data = { "idempotency:abc" => { state: "completed" } }
+      end
+
+      def read(key)
+        @data[key]
+      end
+
+      def write(_key, _value, expires_in: nil, unless_exist: false)
+        nil
+      end
+    end.new
+
+    adapter = Rack::Idempotency::ActiveSupportAdapter.new(store)
+    expect(adapter.write_if_absent("abc", { state: "in_flight" }, ttl: 1)).to eq(false)
   end
 end

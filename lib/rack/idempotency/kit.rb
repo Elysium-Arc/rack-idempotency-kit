@@ -49,16 +49,19 @@ module Rack
         status, headers, body = @app.call(env)
         body_str = normalize_body(body)
 
-        if body_str.bytesize <= @max_body_bytes
-          record = {
-            state: "completed",
-            fingerprint: fingerprint,
-            status: status,
-            headers: headers,
-            body: body_str
-          }
-          @store.write(key, record, ttl: @ttl)
+        too_large = @max_body_bytes && body_str.bytesize > @max_body_bytes
+        record = {
+          state: "completed",
+          fingerprint: fingerprint,
+          status: status,
+          headers: headers
+        }
+        if too_large
+          record[:too_large] = true
+        else
+          record[:body] = body_str
         end
+        @store.write(key, record, ttl: @ttl)
 
         [status, headers, [body_str]]
       ensure
@@ -95,7 +98,11 @@ module Rack
 
         return [409, { "Content-Type" => "application/json" }, [JSON.dump(error: "idempotency_key_in_flight")]] if stored.nil? || stored[:state] == "in_flight"
 
-        [stored[:status], stored[:headers], [stored[:body]]]
+        if stored[:too_large]
+          return [409, { "Content-Type" => "application/json" }, [JSON.dump(error: "idempotency_key_body_too_large")]]
+        end
+
+        [stored[:status], stored[:headers], [stored[:body].to_s]]
       end
 
       def normalize_body(body)
@@ -135,7 +142,14 @@ module Rack
       end
 
       def write_if_absent(key, value, ttl:)
-        @store.write(storage_key(key), value, expires_in: ttl, unless_exist: true)
+        begin
+          result = @store.write(storage_key(key), value, expires_in: ttl, unless_exist: true)
+          return result unless result.nil?
+        rescue ArgumentError
+        end
+
+        return false if read(key)
+        write(key, value, ttl: ttl)
       end
 
       private

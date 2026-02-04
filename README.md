@@ -74,6 +74,7 @@ use Rack::Idempotency::Kit,
 - Replays stored responses for repeated idempotency keys
 - Returns `409` if the same key is reused with a different request fingerprint
 - Returns `409` if a request is still in flight after `wait_timeout`
+- Returns `409` if the response body exceeds `max_body_bytes`
 
 ## Release
 ```bash
